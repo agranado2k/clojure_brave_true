@@ -2,9 +2,11 @@
   (require [clojure.set :as set])
   (:gen-class))
 
-(declare successful-move prompt-move game-over query-rows)
+(declare successful-move prompt-move game-over prompt-rows)
 
-;; Create board
+;;;;
+;; Create the board
+;;;;
 (defn tri*
   "Generates lazy sequence of triangular numbers"
   ([] (tri* 0 1))
@@ -30,12 +32,16 @@
   [pos]
   (inc (count (take-while #(> pos %) tri))))
 
+(defn in-bounds?
+  "Is every position less than or equal the max position?"
+  [max-pos & positions]
+  (= max-pos (apply max max-pos positions)))
+
 (defn connect
   "Form a mutual connection between two positions"
   [board max-pos pos neighbor destination]
-  (if (<= destination max-pos)
-    (reduce (fn [new-board [p1 p2]]
-              (assoc-in new-board [p1 :connections p2] neighbor))
+  (if (in-bounds? max-pos neighbor destination)
+    (reduce (fn [new-board [p1 p2]] (assoc-in new-board [p1 :connections p2] neighbor))
             board
             [[pos destination] [destination pos]])
     board))
@@ -66,41 +72,24 @@
   "Pegs the position and performs connections"
   [board max-pos pos]
   (let [pegged-board (assoc-in board [pos :pegged] true)]
-    (reduce (fn [new-board connection-creation-fn]
-              (connection-creation-fn new-board max-pos pos))
+    (reduce (fn [new-board connector] (connector new-board max-pos pos))
             pegged-board
             [connect-right connect-down-left connect-down-right])))
 
 (defn new-board
-  "Creates a new board with the given number of rows"
   [rows]
   (let [initial-board {:rows rows}
         max-pos (row-tri rows)]
     (reduce (fn [board pos] (add-pos board max-pos pos))
             initial-board
             (range 1 (inc max-pos)))))
-
-;; Moving Peg
-
+;;;;
+;; Move pegs
+;;;;
 (defn pegged?
   "Does the position have a peg in it?"
   [board pos]
   (get-in board [pos :pegged]))
-
-(defn remove-peg
-  "Take the peg at given position out of the board"
-  [board pos]
-  (assoc-in board [pos :pegged] false))
-
-(defn place-peg
-  "Put a peg in the board at given position"
-  [board pos]
-  (assoc-in board [pos :pegged] true))
-
-(defn move-peg
-  "Take peg out of p1 and place it in p2"
-  [board p1 p2]
-  (place-peg (remove-peg board p1) p2))
 
 (defn valid-moves
   "Return a map of all valid moves for pos, where the key is the
@@ -118,6 +107,21 @@
   [board p1 p2]
   (get (valid-moves board p1) p2))
 
+(defn remove-peg
+  "Take the peg at given position out of the board"
+  [board pos]
+  (assoc-in board [pos :pegged] false))
+
+(defn place-peg
+  "Put a peg in the board at given position"
+  [board pos]
+  (assoc-in board [pos :pegged] true))
+
+(defn move-peg
+  "Take peg out of p1 and place it in p2"
+  [board p1 p2]
+  (place-peg (remove-peg board p1) p2))
+
 (defn make-move
   "Move peg from p1 to p2, removing jumped peg"
   [board p1 p2]
@@ -130,12 +134,29 @@
   (some (comp not-empty (partial valid-moves board))
         (map first (filter #(get (second %) :pegged) board))))
 
-;;Rendering and Printing a board
-
+;;;;
+;; Represent board textually and print it
+;;;;
 (def alpha-start 97)
 (def alpha-end 123)
 (def letters (map (comp str char) (range alpha-start alpha-end)))
 (def pos-chars 3)
+
+(def ansi-styles
+  {:red   "[31m"
+   :green "[32m"
+   :blue  "[34m"
+   :reset "[0m"})
+
+(defn ansi
+  "Produce a string which will apply an ansi style"
+  [style]
+  (str \u001b (style ansi-styles)))
+
+(defn colorize
+  "Apply ansi color to text"
+  [text color]
+  (str (ansi color) text (ansi :reset)))
 
 (defn render-pos
   [board pos]
@@ -166,8 +187,9 @@
   (doseq [row-num (range 1 (inc (:rows board)))]
     (println (render-row board row-num))))
 
-;; Player interaction
-
+;;;;
+;; Interaction
+;;;;
 (defn letter->pos
   "Converts a letter string to the corresponding position number"
   [letter]
@@ -175,7 +197,7 @@
 
 (defn get-input
   "Waits for user to enter text and hit enter, then cleans the input"
-  ([] (get-input nil))
+  ([] (get-input ""))
   ([default]
      (let [input (clojure.string/trim (read-line))]
        (if (empty? input)
@@ -183,26 +205,30 @@
          (clojure.string/lower-case input)))))
 
 (defn characters-as-strings
-  [chars]
-  (re-seq #"[^\s+]" chars))
+  "Given a string, return a collection consisting of each individual
+  character"
+  [string]
+  (re-seq #"[a-zA-Z]" string))
 
-(defn user-entered-invalid-move
-  "Handles the next step after a user has entered an invalid move"
+(defn prompt-move
   [board]
-  (println "\n!!! That was an invalid move :(\n")
-  (prompt-move board))
-
-(defn prompt-empty-peg
-  [board]
-  (println "Here's your board:")
+  (println "\nHere's your board:")
   (print-board board)
-  (println "Remove which peg? [e]")
-  (prompt-move (remove-peg board (letter->pos (get-input "e")))))
+  (println "Move from where to where? Enter two letters:")
+  (let [input (map letter->pos (characters-as-strings (get-input)))]
+    (if-let [new-board (make-move board (first input) (second input))]
+      (successful-move new-board)
+      (do
+        (println "\n!!! That was an invalid move :(\n")
+        (prompt-move board)))))
 
-
+(defn successful-move
+  [board]
+  (if (can-move? board)
+    (prompt-move board)
+    (game-over board)))
 
 (defn game-over
-  "Announce the game is over and prompt to play again"
   [board]
   (let [remaining-pegs (count (filter :pegged (vals board)))]
     (println "Game over! You had" remaining-pegs "pegs left:")
@@ -215,22 +241,12 @@
           (println "Bye!")
           (System/exit 0))))))
 
-(defn user-entered-valid-move
-  "Handles the next step after a user has entered a valid move"
+(defn prompt-empty-peg
   [board]
-  (if (can-move? board)
-    (prompt-move board)
-    (game-over board)))
-
-(defn prompt-move
-  [board]
-  (println "\nHere's your board:")
+  (println "Here's your board:")
   (print-board board)
-  (println "Move from where to where? Enter two letters:")
-  (let [input (map letter->pos (characters-as-strings (get-input)))]
-    (if-let [new-board (make-move board (first input) (second input))]
-      (user-entered-valid-move new-board)
-      (user-entered-invalid-move board))))
+  (println "Remove which peg? [e]")
+  (prompt-move (remove-peg board (letter->pos (get-input "e")))))
 
 (defn prompt-rows
   []
@@ -239,3 +255,7 @@
         board (new-board rows)]
     (prompt-empty-peg board)))
 
+(defn -main
+  [& args]
+  (println "Get ready to play peg thing!")
+  (prompt-rows))
